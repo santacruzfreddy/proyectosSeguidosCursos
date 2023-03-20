@@ -3,6 +3,8 @@ package com.proyectosSeguidosCurso.reactor.app;
 import com.proyectosSeguidosCurso.reactor.app.models.Comentarios;
 import com.proyectosSeguidosCurso.reactor.app.models.Usuario;
 import com.proyectosSeguidosCurso.reactor.app.models.UsuarioComentarios;
+import org.reactivestreams.Subscriber;
+import org.reactivestreams.Subscription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -11,8 +13,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
 
 
 @SpringBootApplication
@@ -26,7 +32,129 @@ public class ReactorSpringBootApplication implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        ejemploUsuarioComentariosFlatMap();
+        ejemploCOntrapresion();
+        // ejemploUsuarioComentariosZipWith();
+    }
+
+    public void ejemploCOntrapresion() throws InterruptedException {
+        Flux.range(0, 10)
+                .log()
+                .limitRate(2)
+                .subscribe();
+
+    }
+
+    public void ejemploCOntrapresionSobreEscribiendoMetodoOnSubcriber() throws InterruptedException {
+        Flux.range(0, 10)
+                .log()
+                .subscribe(new Subscriber<Integer>() {
+                    private Subscription subscription;
+                    private Integer limit = 2;
+                    private Integer used = 0;
+
+                    @Override
+                    public void onSubscribe(Subscription subscription) {
+                        this.subscription = subscription;
+                        subscription.request(limit);
+                    }
+
+                    @Override
+                    public void onNext(Integer integer) {
+                        log.info(integer.toString());
+                        used++;
+                        if (used == limit) {
+                            used = 0;
+                            subscription.request(limit);
+                        }
+
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+
+                    }
+
+                    @Override
+                    public void onComplete() {
+
+                    }
+                });
+
+    }
+
+    public void crearFluxDesdeCero() throws InterruptedException {
+        Flux.create(emitter -> {
+                    Timer timer = new Timer();
+                    timer.schedule(new TimerTask() {
+                        private Integer contador = 0;
+
+                        @Override
+                        public void run() {
+                            emitter.next(++contador);
+                            if (contador == 10) {
+                                timer.cancel();
+                                emitter.complete();
+                            }
+
+                            if (contador == 5) {
+                                timer.cancel();
+                                emitter.error(new InterruptedException("Error, se ha detenido el flux en 5"));
+                            }
+                        }
+                    }, 1000, 1000);
+                })
+                //.doOnNext(next -> log.info(next.toString()))
+                //.doOnComplete(() -> log.info("Hemos terminado"))
+                .subscribe(next -> log.info(next.toString()),
+                        error -> log.error(error.toString()),
+                        () -> log.info("Hemos terminado"));
+    }
+
+    public void intervaloInfinito() throws InterruptedException {
+
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Flux.interval(Duration.ofSeconds(1))
+                .doOnTerminate(latch::countDown)
+                .flatMap(i -> {
+                    if (i > 5) {
+                        return Flux.error(new InterruptedException("solamente hasta 5!"));
+                    }
+                    return Flux.just(i);
+                })
+                .map(i -> "Hola " + i)
+                //.doOnNext(s -> log.info(s))
+                .retry(2)
+                .subscribe(s -> log.info(s), e -> log.error(e.getMessage()));
+
+        latch.await();
+    }
+
+    public void ejemploIntervalElementos() {
+        Flux<Integer> rango = Flux.range(1, 12)
+                .delayElements(Duration.ofSeconds(1))
+                .doOnNext(i -> log.info(i.toString()));
+
+        rango.blockLast();
+
+    }
+
+    public void ejemploInterval() {
+        Flux<Integer> rango = Flux.range(1, 12);
+        Flux<Long> retraso = Flux.interval(Duration.ofSeconds(1));
+
+        //este aqui utiliza hilos pero no se visualiza
+        //rango.zipWith(retraso, (ran, retr) -> ran).doOnNext(i -> log.info(i.toString())).subscribe();
+        //el block last hace que se bloque todos los flux
+        rango.zipWith(retraso, (ran, retr) -> ran).doOnNext(i -> log.info(i.toString())).blockLast();
+    }
+
+    public void ejemploUsuarioComentariosZipWithRango() {
+        Flux.just(1, 2, 3, 4).
+                map(i -> (i * 2))
+                .zipWith(Flux.range(1, 4), (uno, dos) -> {
+                    return String.format("Primer FLux: %d, Segundo Flux: %d", uno, dos);
+                }).subscribe(texto -> log.info(texto));
     }
 
     public Usuario crearUsuario() {
@@ -42,13 +170,40 @@ public class ReactorSpringBootApplication implements CommandLineRunner {
     }
 
 
+    public void ejemploUsuarioComentariosZipWith2() {
+        Mono<Usuario> usuarioMono = Mono.fromCallable(() -> crearUsuario());
+        Mono<Comentarios> comentariosMono = Mono.fromCallable(() -> crearComentarios());
+
+        Mono<UsuarioComentarios> usuarioComentariosMono = usuarioMono.zipWith(comentariosMono)
+                .map(tuplaUsuarioComentario -> {
+                    Usuario usuario = tuplaUsuarioComentario.getT1();
+                    Comentarios comentarios = tuplaUsuarioComentario.getT2();
+                    return new UsuarioComentarios(usuario, comentarios);
+                });
+
+        usuarioComentariosMono.subscribe(usuarioComentarios -> log.info(usuarioComentarios.toString()));
+
+    }
+
+    public void ejemploUsuarioComentariosZipWith() {
+        Mono<Usuario> usuarioMono = Mono.fromCallable(() -> crearUsuario());
+        Mono<Comentarios> comentariosMono = Mono.fromCallable(() -> crearComentarios());
+
+        Mono<UsuarioComentarios> usuarioComentariosMono = usuarioMono.zipWith(comentariosMono,
+                (usuario, comentario) -> new UsuarioComentarios(usuario, comentario));
+
+        usuarioComentariosMono.subscribe(usuarioComentarios -> log.info(usuarioComentarios.toString()));
+
+    }
+
+
     public void ejemploUsuarioComentariosFlatMap() {
         Mono<Usuario> usuarioMono = Mono.fromCallable(() -> crearUsuario());
         Mono<Comentarios> comentariosMono = Mono.fromCallable(() -> crearComentarios());
 
         usuarioMono.flatMap(usuario -> comentariosMono.map(comentario -> new UsuarioComentarios(usuario, comentario)))
                 .subscribe(usuarioComentarios -> log.info(usuarioComentarios.toString()));
-        
+
     }
 
 
